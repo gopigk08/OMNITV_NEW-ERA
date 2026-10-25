@@ -33,6 +33,7 @@ jobs:
       - name: Run OmniTV Channel Syncers (S1 to S8 Order)
         env:
           M3U_OUTPUT_HEADER: ${{ secrets.M3U_OUTPUT_HEADER }}
+          EPG_URL: ${{ secrets.EPG_URL }}
           OMNI_MASTER_KEY: ${{ secrets.OMNI_MASTER_KEY }}
           OMNI_MASTER_IV: ${{ secrets.OMNI_MASTER_IV }}
           JIO_TV_URL: ${{ secrets.JIO_TV_URL }}
@@ -56,6 +57,7 @@ jobs:
       - name: Run OmniTV Master Deployer (Encrypt & Package)
         env:
           M3U_OUTPUT_HEADER: ${{ secrets.M3U_OUTPUT_HEADER }}
+          EPG_URL: ${{ secrets.EPG_URL }}
           OMNI_MASTER_KEY: ${{ secrets.OMNI_MASTER_KEY }}
           OMNI_MASTER_IV: ${{ secrets.OMNI_MASTER_IV }}
         run: |
