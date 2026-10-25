@@ -1,4 +1,3 @@
-# language: Python, file: omnitv_main.py
 import os
 import sys
 import json
@@ -79,19 +78,18 @@ def build_m3u_header():
         return "#EXTM3U\n"
 
 OUTPUT_HEADER = build_m3u_header()
-if EPG_URL:
-    print("[Master EPG Engine] EPG successfully detected from Secrets and attached to Header.")
-else:
-    print("[Master EPG Engine] No EPG_URL secret provided. Default header applied.")
 
 # ---------------------------------------------------------
 # 4. PREPARE CLOUDFLARE DISTRIBUTION DIRECTORY
 # ---------------------------------------------------------
 DIST_DIR = "cloudflare_dist"
+if os.path.exists(DIST_DIR):
+    # Clean previous build to prevent leftover unwanted files
+    shutil.rmtree(DIST_DIR)
 os.makedirs(DIST_DIR, exist_ok=True)
 
 # ---------------------------------------------------------
-# 5. PLAYLIST CONFIGURATION
+# 5. PLAYLIST CONFIGURATION (CANONICAL OMNITV SERVERS S1 - S8)
 # ---------------------------------------------------------
 PLAYLISTS_TO_PROCESS = [
     {
@@ -139,17 +137,21 @@ PLAYLISTS_TO_PROCESS = [
 ]
 
 # ---------------------------------------------------------
-# 6. ENCRYPT ALL PLAYLISTS INTO .enc FILES
+# 6. PROCESS & ENCRYPT PLAYLISTS (EXACTLY 1 ENCRYPTED FILE PER SERVER)
 # ---------------------------------------------------------
+print("=" * 70)
+print("              OmniTV Cloudflare Master Deployer")
+print("=" * 70)
+if EPG_URL:
+    print(f"[EPG Engine] ✅ EPG Attached: {EPG_URL}")
+else:
+    print("[EPG Engine] ⚠️ No EPG_URL secret provided. Default header applied.")
+
 config_playlists = []
+report_summary = []
 priority_counter = 1
-all_master_channels = []
-processed_sources = set()
 
 for pl in PLAYLISTS_TO_PROCESS:
-    print(f"Processing Playlist: {pl['name']} ({pl['id']})")
-    has_channels = False
-    
     target_file = pl.get("local_file")
     fallback = pl.get("fallback_file")
     
@@ -159,10 +161,10 @@ for pl in PLAYLISTS_TO_PROCESS:
     elif fallback and os.path.exists(fallback):
         file_to_read = fallback
 
+    channel_count = 0
+    status_str = ""
+
     if file_to_read:
-        print(f"  -> Reading source from: {file_to_read}")
-        processed_sources.add(os.path.basename(file_to_read).lower())
-        
         with open(file_to_read, "r", encoding="utf-8", errors="replace") as f:
             raw_content = f.read()
 
@@ -171,36 +173,28 @@ for pl in PLAYLISTS_TO_PROCESS:
         else:
             raw_m3u = raw_content
 
+        channel_count = raw_m3u.count("#EXTINF:")
+
         lines = raw_m3u.splitlines()
+        # Cleanly strip leading empty lines and any existing #EXTM3U
         while lines and (not lines[0].strip() or lines[0].strip().upper().startswith("#EXTM3U")):
             lines.pop(0)
-            
+
         all_m3u = OUTPUT_HEADER + "\n".join(lines) + "\n"
-        if "#EXTINF" in raw_m3u:
-            has_channels = True
-            all_master_channels.extend(lines)
+        status_str = f"✅ OK ({channel_count:,} channels)" if channel_count > 0 else "❌ FAILED (0 channels - Empty)"
     else:
-        print(f"  -> Source file not found: {target_file}")
+        status_str = f"❌ FAILED (File '{target_file}' not found)"
         all_m3u = OUTPUT_HEADER
-            
-    if not has_channels:
-        print(f"  -> No channels found for {pl['name']}. Fallback to dummy data.")
-        all_m3u += '#EXTINF:-1,No Channels Available\n#placeholder\n'
-        
+
+    if channel_count == 0:
+        # Fallback dummy placeholder to maintain valid M3U structure
+        all_m3u += '#EXTINF:-1 tvg-id="" tvg-name="No Channels",No Channels Available\n#placeholder\n'
+
+    # Output strictly as playlist_<id>.enc
     output_filename = f"playlist_{pl['id']}.enc"
     encrypted_data = encrypt_with_session_key(all_m3u)
     with open(os.path.join(DIST_DIR, output_filename), "w", encoding="utf-8") as f:
         f.write(encrypted_data)
-    print(f"  -> [Cloudflare Output] Saved {output_filename}")
-    
-    # ALSO save with original base filename (e.g. helloworld.enc, gio.enc)
-    if target_file:
-        base_target = os.path.splitext(os.path.basename(target_file))[0]
-        alt_enc_name = f"{base_target}.enc"
-        if alt_enc_name != output_filename:
-            with open(os.path.join(DIST_DIR, alt_enc_name), "w", encoding="utf-8") as f:
-                f.write(encrypted_data)
-            print(f"  -> [Cloudflare Output] Also saved {alt_enc_name}")
 
     config_playlists.append({
         "id": pl["id"],
@@ -208,47 +202,19 @@ for pl in PLAYLISTS_TO_PROCESS:
         "url": output_filename,
         "priority": priority_counter
     })
+
+    report_summary.append({
+        "num": priority_counter,
+        "name": pl["name"],
+        "source": file_to_read or str(target_file),
+        "output": output_filename,
+        "channels": channel_count,
+        "status": status_str
+    })
     priority_counter += 1
 
 # ---------------------------------------------------------
-# 7. ENCRYPT ANY REMAINING .m3u FILES INTO cloudflare_dist/*.enc
-# ---------------------------------------------------------
-for m3u_path in glob.glob("*.m3u"):
-    m3u_base = os.path.basename(m3u_path)
-    if m3u_base.lower() in processed_sources:
-        continue
-        
-    print(f"Processing Additional Local File: {m3u_base}")
-    try:
-        with open(m3u_path, "r", encoding="utf-8", errors="replace") as f:
-            raw_content = f.read()
-            
-        lines = raw_content.splitlines()
-        while lines and (not lines[0].strip() or lines[0].strip().upper().startswith("#EXTM3U")):
-            lines.pop(0)
-            
-        full_m3u = OUTPUT_HEADER + "\n".join(lines) + "\n"
-        out_name = f"{os.path.splitext(m3u_base)[0]}.enc"
-        encrypted_blob = encrypt_with_session_key(full_m3u)
-        
-        with open(os.path.join(DIST_DIR, out_name), "w", encoding="utf-8") as f:
-            f.write(encrypted_blob)
-        print(f"  -> [Cloudflare Output] Encrypted {m3u_base} -> {out_name}")
-    except Exception as e:
-        print(f"  -> Warning: failed to encrypt {m3u_base}: {e}")
-
-# ---------------------------------------------------------
-# 8. BUILD & ENCRYPT MASTER 'all.enc' (ALL CHANNELS UNIFIED)
-# ---------------------------------------------------------
-if all_master_channels:
-    master_m3u = OUTPUT_HEADER + "\n".join(all_master_channels) + "\n"
-    encrypted_master = encrypt_with_session_key(master_m3u)
-    with open(os.path.join(DIST_DIR, "all.enc"), "w", encoding="utf-8") as f:
-        f.write(encrypted_master)
-    print("  -> [Cloudflare Output] Saved unified master 'all.enc'")
-
-# ---------------------------------------------------------
-# 9. BUILD & ENCRYPT UNIFIED REMOTE CONFIG
+# 7. BUILD & ENCRYPT UNIFIED REMOTE CONFIG
 # ---------------------------------------------------------
 remote_config = {
     "playlists": config_playlists
@@ -257,27 +223,49 @@ if EPG_URL:
     remote_config["epgUrl"] = EPG_URL
     remote_config["epg_url"] = EPG_URL
 
-print("Encrypting unified remote_config.enc...")
 with open(os.path.join(DIST_DIR, "remote_config.enc"), "w", encoding="utf-8") as f:
     f.write(encrypt_with_session_key(json.dumps(remote_config)))
 
-print("Encrypting and exporting session_token.enc...")
+# ---------------------------------------------------------
+# 8. EXPORT ENCRYPTED SESSION TOKEN
+# ---------------------------------------------------------
 with open(os.path.join(DIST_DIR, "session_token.enc"), "w", encoding="utf-8") as f:
     f.write(encrypt_session_key())
 
 # ---------------------------------------------------------
-# 10. COPY index.html & PURGE UNENCRYPTED .m3u FROM DIST
+# 9. COPY index.html IF PRESENT
 # ---------------------------------------------------------
 if os.path.exists("index.html"):
     shutil.copy("index.html", os.path.join(DIST_DIR, "index.html"))
 
-# STRICT SECURITY: Delete any raw .m3u files in dist so NO plaintext streams are exposed!
-for raw_m3u in glob.glob(os.path.join(DIST_DIR, "*.m3u")):
-    os.remove(raw_m3u)
+# ---------------------------------------------------------
+# 10. GENERATE CLEAN REPORT & DIAGNOSTICS DASHBOARD
+# ---------------------------------------------------------
+print("\n" + "=" * 70)
+print("                   OmniTV Deployment Summary")
+print("=" * 70)
+print(f"{'#':<3} {'Server Name':<23} {'Channels':<12} {'Status'}")
+print("-" * 70)
 
-print("\n" + "="*60)
-print(f"SUCCESS! All files encrypted and placed in '{DIST_DIR}/'.")
-print("Files ready to deploy to Cloudflare Pages (https://omnitv-live.pages.dev/):")
-for f in sorted(os.listdir(DIST_DIR)):
-    print(f"  - {f}")
-print("="*60)
+has_failures = False
+for item in report_summary:
+    ch_text = f"{item['channels']:,}" if item['channels'] > 0 else "0"
+    print(f"{item['num']:<3} {item['name']:<23} {ch_text:<12} {item['status']}")
+    if item['channels'] == 0:
+        has_failures = True
+
+print("-" * 70)
+if has_failures:
+    print("⚠️  DIAGNOSTICS / ISSUES DETECTED:")
+    for item in report_summary:
+        if item['channels'] == 0:
+            print(f"   -> [{item['name']}]: Source '{item['source']}' is empty or missing.")
+            print(f"      Check if secret URL or syncer script failed for {item['name']}.")
+print("-" * 70)
+
+dist_files = sorted(os.listdir(DIST_DIR))
+print(f"📦 Files Ready to Deploy to Cloudflare Pages ({len(dist_files)} total):")
+for f in dist_files:
+    size = os.path.getsize(os.path.join(DIST_DIR, f))
+    print(f"   • {f:<25} ({size:,} bytes)")
+print("=" * 70)
