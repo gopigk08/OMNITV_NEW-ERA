@@ -143,7 +143,7 @@ print("=" * 70)
 print("              OmniTV Cloudflare Master Deployer")
 print("=" * 70)
 if EPG_URL:
-    print(f"[EPG Engine] ✅ EPG Attached: {EPG_URL}")
+    print("[EPG Engine] ✅ EPG Attached: [PROTECTED ENDPOINT]")
 else:
     print("[EPG Engine] ⚠️ No EPG_URL secret provided. Default header applied.")
 
