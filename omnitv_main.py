@@ -1,10 +1,12 @@
-﻿import os
+# language: Python, file: omnitv_main.py
+import os
 import sys
 import json
 import base64
 import urllib.request
 import ssl
 import re
+import glob
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.backends import default_backend
@@ -60,12 +62,48 @@ def encrypt_session_key():
     return base64.b64encode(ct).decode('utf-8')
 
 # ---------------------------------------------------------
-# 3. M3U HEADER & EPG SOURCES
+# 3. M3U HEADER & EPG SOURCES (AUTOMATIC MULTI-FORMAT EPG)
 # ---------------------------------------------------------
-OUTPUT_HEADER = os.environ.get("M3U_OUTPUT_HEADER", "#EXTM3U\n").strip() + "\n"
+EPG_URL = os.environ.get("EPG_URL", "").strip()
+raw_header = os.environ.get("M3U_OUTPUT_HEADER", "").strip()
+
+def build_m3u_header():
+    if EPG_URL:
+        if raw_header and "url-tvg" not in raw_header and "x-tvg-url" not in raw_header:
+            base = raw_header.splitlines()[0] if raw_header else "#EXTM3U"
+            return f'{base} url-tvg="{EPG_URL}" x-tvg-url="{EPG_URL}"\n'
+        elif not raw_header or raw_header == "#EXTM3U":
+            return f'#EXTM3U url-tvg="{EPG_URL}" x-tvg-url="{EPG_URL}"\n'
+        else:
+            return raw_header + "\n"
+    elif raw_header:
+        return raw_header + "\n"
+    else:
+        return "#EXTM3U\n"
+
+OUTPUT_HEADER = build_m3u_header()
+print(f"[Master EPG Engine] Using Header: {OUTPUT_HEADER.strip()}")
 
 # ---------------------------------------------------------
-# 4. PLAYLIST CONFIGURATION
+# 4. AUTO-INJECT EPG INTO ALL EXISTING .m3u FILES ON DISK
+# ---------------------------------------------------------
+if EPG_URL:
+    for m3u_path in glob.glob("*.m3u"):
+        try:
+            with open(m3u_path, "r", encoding="utf-8", errors="replace") as f:
+                content = f.read()
+            lines = content.splitlines()
+            if lines and lines[0].strip().upper().startswith("#EXTM3U"):
+                if "url-tvg" not in lines[0] and "x-tvg-url" not in lines[0]:
+                    lines[0] = OUTPUT_HEADER.strip()
+                    with open(m3u_path, "w", encoding="utf-8", newline="\n") as f:
+                        f.write("\n".join(lines) + "\n")
+                    print(f"  [EPG Auto-Inject] Injected EPG into {m3u_path}")
+        except Exception as e:
+            print(f"  [EPG Auto-Inject Warning] Could not patch {m3u_path}: {e}")
+
+# ---------------------------------------------------------
+# 5. PLAYLIST CONFIGURATION
 # ---------------------------------------------------------
 PLAYLISTS_TO_PROCESS = [
     {
@@ -113,7 +151,7 @@ PLAYLISTS_TO_PROCESS = [
 ]
 
 # ---------------------------------------------------------
-# 5. FETCH, PARSE, ENCRYPT, & ASSEMBLE
+# 6. FETCH, PARSE, ENCRYPT, & ASSEMBLE
 # ---------------------------------------------------------
 os.makedirs("cloudflare_dist", exist_ok=True)
 config_playlists = []
@@ -173,7 +211,7 @@ for pl in PLAYLISTS_TO_PROCESS:
     priority_counter += 1
 
 # ---------------------------------------------------------
-# 6. BUILD & ENCRYPT UNIFIED REMOTE CONFIG
+# 7. BUILD & ENCRYPT UNIFIED REMOTE CONFIG
 # ---------------------------------------------------------
 remote_config = {
     "playlists": config_playlists
