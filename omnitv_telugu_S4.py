@@ -1,4 +1,3 @@
-# language: Python, file: omnitv_telugu_S4.py
 import urllib.request
 import urllib.error
 import re
@@ -16,6 +15,7 @@ from cryptography.hazmat.backends import default_backend
 # ─── CONFIG (READ FROM ENVIRONMENT - ZERO HARDCODED SECRETS) ──────────
 PRIMARY_URL  = os.environ.get("JIO_TV_URL", "").strip()
 FALLBACK_URL = os.environ.get("DIGITAL_URL", "").strip()
+EPG_URL      = os.environ.get("EPG_URL", "").strip()
 
 TEMP_ENC_FILE  = "template.enc"
 TEMP_M3U_FILE  = "template.m3u"
@@ -26,7 +26,13 @@ OUTPUT_FILE    = "helloworld.m3u"
 RETRY_COUNT = 5
 RETRY_DELAY = 10
 
-OUTPUT_HEADER = os.environ.get("M3U_OUTPUT_HEADER", "#EXTM3U\n").strip() + "\n"
+raw_header = os.environ.get("M3U_OUTPUT_HEADER", "").strip()
+if raw_header:
+    OUTPUT_HEADER = raw_header + "\n"
+elif EPG_URL:
+    OUTPUT_HEADER = f'#EXTM3U url-tvg="{EPG_URL}" x-tvg-url="{EPG_URL}"\n'
+else:
+    OUTPUT_HEADER = "#EXTM3U\n"
 
 def get_master_crypto():
     hex_key = os.environ.get("OMNI_MASTER_KEY", "").strip()
@@ -60,7 +66,7 @@ def make_ssl_ctx():
     ctx.verify_mode = ssl.CERT_NONE
     return ctx
 
-def fetch_url(url, retries=RETRY_COUNT):
+def fetch_url(url, label="Source", retries=RETRY_COUNT):
     if not url:
         return ""
     ctx = make_ssl_ctx()
@@ -71,10 +77,10 @@ def fetch_url(url, retries=RETRY_COUNT):
             with urllib.request.urlopen(req, context=ctx, timeout=30) as resp:
                 data = resp.read().decode("utf-8", errors="replace")
                 if data.strip():
-                    print(f"Fetched successfully on attempt {attempt}: {url[:45]}...")
+                    print(f"  -> Fetched {label} successfully on attempt {attempt}")
                     return data
         except Exception as e:
-            print(f"Attempt {attempt}/{retries} failed for {url[:45]}...: {e}")
+            print(f"  -> Attempt {attempt}/{retries} failed for {label}: {e}")
             if attempt < retries:
                 time.sleep(RETRY_DELAY)
     return ""
@@ -179,11 +185,11 @@ def main():
     temp_order = parse_temp_order()
     print(f"Found {len(temp_order)} channels in template for ordering")
 
-    print(f"Fetching Primary URL: {PRIMARY_URL[:50]}...")
-    primary_content = fetch_url(PRIMARY_URL)
+    print("Fetching Primary URL: [PROTECTED SECRET]...")
+    primary_content = fetch_url(PRIMARY_URL, label="Primary Source")
 
-    print(f"Fetching Fallback URL: {FALLBACK_URL[:50]}...")
-    fallback_content = fetch_url(FALLBACK_URL)
+    print("Fetching Fallback URL: [PROTECTED SECRET]...")
+    fallback_content = fetch_url(FALLBACK_URL, label="Fallback Source")
 
     primary_blocks = parse_source_into_blocks(primary_content) if primary_content else []
     fallback_blocks = parse_source_into_blocks(fallback_content) if fallback_content else []
