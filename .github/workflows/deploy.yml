@@ -2,7 +2,7 @@ name: Advanced OmniTV Deployer
 
 on:
   schedule:
-    - cron: '0 * * * *' # ప్రతి 60 నిమిషాలకు ఆటోమేటిక్ రన్
+    - cron: '*/30 * * * *' 
   workflow_dispatch:
   push:
     branches:
@@ -34,6 +34,7 @@ jobs:
         env:
           M3U_OUTPUT_HEADER: ${{ secrets.M3U_OUTPUT_HEADER }}
           OMNI_MASTER_KEY: ${{ secrets.OMNI_MASTER_KEY }}
+          OMNI_MASTER_IV: ${{ secrets.OMNI_MASTER_IV }}
           JIO_TV_URL: ${{ secrets.JIO_TV_URL }}
           JIO_TV_PLUS_URL: ${{ secrets.JIO_TV_PLUS_URL }}
           DIGITAL_URL: ${{ secrets.DIGITAL_URL }}
@@ -56,6 +57,7 @@ jobs:
         env:
           M3U_OUTPUT_HEADER: ${{ secrets.M3U_OUTPUT_HEADER }}
           OMNI_MASTER_KEY: ${{ secrets.OMNI_MASTER_KEY }}
+          OMNI_MASTER_IV: ${{ secrets.OMNI_MASTER_IV }}
         run: |
           python omnitv_main.py
 
