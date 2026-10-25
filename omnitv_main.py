@@ -62,27 +62,28 @@ def encrypt_session_key():
     return base64.b64encode(ct).decode('utf-8')
 
 # ---------------------------------------------------------
-# 3. M3U HEADER & EPG SOURCES (AUTOMATIC MULTI-FORMAT EPG)
+# 3. M3U HEADER & EPG SOURCES (READ STRICTLY FROM SECRETS)
 # ---------------------------------------------------------
-EPG_URL = os.environ.get("EPG_URL", "").strip()
+EPG_URL    = os.environ.get("EPG_URL", "").strip()
 raw_header = os.environ.get("M3U_OUTPUT_HEADER", "").strip()
 
 def build_m3u_header():
-    if EPG_URL:
-        if raw_header and "url-tvg" not in raw_header and "x-tvg-url" not in raw_header:
-            base = raw_header.splitlines()[0] if raw_header else "#EXTM3U"
-            return f'{base} url-tvg="{EPG_URL}" x-tvg-url="{EPG_URL}"\n'
-        elif not raw_header or raw_header == "#EXTM3U":
-            return f'#EXTM3U url-tvg="{EPG_URL}" x-tvg-url="{EPG_URL}"\n'
-        else:
-            return raw_header + "\n"
+    # If raw_header explicitly contains x-tvg-url or url-tvg, use it
+    if raw_header and ("x-tvg-url" in raw_header or "url-tvg" in raw_header):
+        return raw_header.rstrip() + "\n"
+    elif EPG_URL:
+        # Standard format recognized by Android ChannelRepository Regex("x-tvg-url=\"([^\"]+)\"")
+        return f'#EXTM3U x-tvg-url="{EPG_URL}" url-tvg="{EPG_URL}"\n'
     elif raw_header:
-        return raw_header + "\n"
+        return raw_header.rstrip() + "\n"
     else:
         return "#EXTM3U\n"
 
 OUTPUT_HEADER = build_m3u_header()
-print(f"[Master EPG Engine] Using Header: {OUTPUT_HEADER.strip()}")
+if EPG_URL:
+    print("[Master EPG Engine] EPG successfully detected from Secrets and attached to Header.")
+else:
+    print("[Master EPG Engine] No EPG_URL secret provided. Default header applied.")
 
 # ---------------------------------------------------------
 # 4. AUTO-INJECT EPG INTO ALL EXISTING .m3u FILES ON DISK
@@ -93,12 +94,11 @@ if EPG_URL:
             with open(m3u_path, "r", encoding="utf-8", errors="replace") as f:
                 content = f.read()
             lines = content.splitlines()
-            if lines and lines[0].strip().upper().startswith("#EXTM3U"):
-                if "url-tvg" not in lines[0] and "x-tvg-url" not in lines[0]:
-                    lines[0] = OUTPUT_HEADER.strip()
-                    with open(m3u_path, "w", encoding="utf-8", newline="\n") as f:
-                        f.write("\n".join(lines) + "\n")
-                    print(f"  [EPG Auto-Inject] Injected EPG into {m3u_path}")
+            while lines and (not lines[0].strip() or lines[0].strip().upper().startswith("#EXTM3U")):
+                lines.pop(0)
+            with open(m3u_path, "w", encoding="utf-8", newline="\n") as f:
+                f.write(OUTPUT_HEADER + "\n".join(lines) + "\n")
+            print(f"  [EPG Auto-Inject] Injected EPG into {m3u_path}")
         except Exception as e:
             print(f"  [EPG Auto-Inject Warning] Could not patch {m3u_path}: {e}")
 
@@ -159,7 +159,6 @@ priority_counter = 1
 
 for pl in PLAYLISTS_TO_PROCESS:
     print(f"Processing Playlist: {pl['name']} ({pl['id']})")
-    all_m3u = OUTPUT_HEADER
     has_channels = False
     
     target_file = pl.get("local_file")
@@ -182,14 +181,16 @@ for pl in PLAYLISTS_TO_PROCESS:
             raw_m3u = raw_content
 
         lines = raw_m3u.splitlines()
-        if lines and lines[0].strip().upper().startswith("#EXTM3U"):
-            lines = lines[1:]
+        # Cleanly strip leading empty lines and any existing #EXTM3U
+        while lines and (not lines[0].strip() or lines[0].strip().upper().startswith("#EXTM3U")):
+            lines.pop(0)
             
-        all_m3u += "\n".join(lines) + "\n"
+        all_m3u = OUTPUT_HEADER + "\n".join(lines) + "\n"
         if "#EXTINF" in raw_m3u:
             has_channels = True
     else:
         print(f"  -> Source file not found: {target_file}")
+        all_m3u = OUTPUT_HEADER
             
     if not has_channels:
         print(f" -> No channels found for {pl['name']}. Fallback to dummy data.")
@@ -216,6 +217,9 @@ for pl in PLAYLISTS_TO_PROCESS:
 remote_config = {
     "playlists": config_playlists
 }
+if EPG_URL:
+    remote_config["epgUrl"] = EPG_URL
+    remote_config["epg_url"] = EPG_URL
 
 print("Encrypting unified config...")
 with open("cloudflare_dist/remote_config.enc", "w", encoding="utf-8") as f:
