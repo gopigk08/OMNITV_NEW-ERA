@@ -7,6 +7,7 @@ import urllib.request
 import ssl
 import re
 import glob
+import shutil
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.backends import default_backend
@@ -68,11 +69,9 @@ EPG_URL    = os.environ.get("EPG_URL", "").strip()
 raw_header = os.environ.get("M3U_OUTPUT_HEADER", "").strip()
 
 def build_m3u_header():
-    # If raw_header explicitly contains x-tvg-url or url-tvg, use it
     if raw_header and ("x-tvg-url" in raw_header or "url-tvg" in raw_header):
         return raw_header.rstrip() + "\n"
     elif EPG_URL:
-        # Standard format recognized by Android ChannelRepository Regex("x-tvg-url=\"([^\"]+)\"")
         return f'#EXTM3U x-tvg-url="{EPG_URL}" url-tvg="{EPG_URL}"\n'
     elif raw_header:
         return raw_header.rstrip() + "\n"
@@ -86,21 +85,10 @@ else:
     print("[Master EPG Engine] No EPG_URL secret provided. Default header applied.")
 
 # ---------------------------------------------------------
-# 4. AUTO-INJECT EPG INTO ALL EXISTING .m3u FILES ON DISK
+# 4. PREPARE CLOUDFLARE DISTRIBUTION DIRECTORY
 # ---------------------------------------------------------
-if EPG_URL:
-    for m3u_path in glob.glob("*.m3u"):
-        try:
-            with open(m3u_path, "r", encoding="utf-8", errors="replace") as f:
-                content = f.read()
-            lines = content.splitlines()
-            while lines and (not lines[0].strip() or lines[0].strip().upper().startswith("#EXTM3U")):
-                lines.pop(0)
-            with open(m3u_path, "w", encoding="utf-8", newline="\n") as f:
-                f.write(OUTPUT_HEADER + "\n".join(lines) + "\n")
-            print(f"  [EPG Auto-Inject] Injected EPG into {m3u_path}")
-        except Exception as e:
-            print(f"  [EPG Auto-Inject Warning] Could not patch {m3u_path}: {e}")
+DIST_DIR = "cloudflare_dist"
+os.makedirs(DIST_DIR, exist_ok=True)
 
 # ---------------------------------------------------------
 # 5. PLAYLIST CONFIGURATION
@@ -151,11 +139,12 @@ PLAYLISTS_TO_PROCESS = [
 ]
 
 # ---------------------------------------------------------
-# 6. FETCH, PARSE, ENCRYPT, & ASSEMBLE
+# 6. ENCRYPT ALL PLAYLISTS INTO .enc FILES
 # ---------------------------------------------------------
-os.makedirs("cloudflare_dist", exist_ok=True)
 config_playlists = []
 priority_counter = 1
+all_master_channels = []
+processed_sources = set()
 
 for pl in PLAYLISTS_TO_PROCESS:
     print(f"Processing Playlist: {pl['name']} ({pl['id']})")
@@ -172,6 +161,8 @@ for pl in PLAYLISTS_TO_PROCESS:
 
     if file_to_read:
         print(f"  -> Reading source from: {file_to_read}")
+        processed_sources.add(os.path.basename(file_to_read).lower())
+        
         with open(file_to_read, "r", encoding="utf-8", errors="replace") as f:
             raw_content = f.read()
 
@@ -181,28 +172,36 @@ for pl in PLAYLISTS_TO_PROCESS:
             raw_m3u = raw_content
 
         lines = raw_m3u.splitlines()
-        # Cleanly strip leading empty lines and any existing #EXTM3U
         while lines and (not lines[0].strip() or lines[0].strip().upper().startswith("#EXTM3U")):
             lines.pop(0)
             
         all_m3u = OUTPUT_HEADER + "\n".join(lines) + "\n"
         if "#EXTINF" in raw_m3u:
             has_channels = True
+            all_master_channels.extend(lines)
     else:
         print(f"  -> Source file not found: {target_file}")
         all_m3u = OUTPUT_HEADER
             
     if not has_channels:
-        print(f" -> No channels found for {pl['name']}. Fallback to dummy data.")
+        print(f"  -> No channels found for {pl['name']}. Fallback to dummy data.")
         all_m3u += '#EXTINF:-1,No Channels Available\n#placeholder\n'
         
     output_filename = f"playlist_{pl['id']}.enc"
-    print(f" -> Encrypting with Session Key -> {output_filename}")
-    
     encrypted_data = encrypt_with_session_key(all_m3u)
-    with open(os.path.join("cloudflare_dist", output_filename), "w", encoding="utf-8") as f:
+    with open(os.path.join(DIST_DIR, output_filename), "w", encoding="utf-8") as f:
         f.write(encrypted_data)
-        
+    print(f"  -> [Cloudflare Output] Saved {output_filename}")
+    
+    # ALSO save with original base filename (e.g. helloworld.enc, gio.enc)
+    if target_file:
+        base_target = os.path.splitext(os.path.basename(target_file))[0]
+        alt_enc_name = f"{base_target}.enc"
+        if alt_enc_name != output_filename:
+            with open(os.path.join(DIST_DIR, alt_enc_name), "w", encoding="utf-8") as f:
+                f.write(encrypted_data)
+            print(f"  -> [Cloudflare Output] Also saved {alt_enc_name}")
+
     config_playlists.append({
         "id": pl["id"],
         "name": pl["name"],
@@ -212,7 +211,44 @@ for pl in PLAYLISTS_TO_PROCESS:
     priority_counter += 1
 
 # ---------------------------------------------------------
-# 7. BUILD & ENCRYPT UNIFIED REMOTE CONFIG
+# 7. ENCRYPT ANY REMAINING .m3u FILES INTO cloudflare_dist/*.enc
+# ---------------------------------------------------------
+for m3u_path in glob.glob("*.m3u"):
+    m3u_base = os.path.basename(m3u_path)
+    if m3u_base.lower() in processed_sources:
+        continue
+        
+    print(f"Processing Additional Local File: {m3u_base}")
+    try:
+        with open(m3u_path, "r", encoding="utf-8", errors="replace") as f:
+            raw_content = f.read()
+            
+        lines = raw_content.splitlines()
+        while lines and (not lines[0].strip() or lines[0].strip().upper().startswith("#EXTM3U")):
+            lines.pop(0)
+            
+        full_m3u = OUTPUT_HEADER + "\n".join(lines) + "\n"
+        out_name = f"{os.path.splitext(m3u_base)[0]}.enc"
+        encrypted_blob = encrypt_with_session_key(full_m3u)
+        
+        with open(os.path.join(DIST_DIR, out_name), "w", encoding="utf-8") as f:
+            f.write(encrypted_blob)
+        print(f"  -> [Cloudflare Output] Encrypted {m3u_base} -> {out_name}")
+    except Exception as e:
+        print(f"  -> Warning: failed to encrypt {m3u_base}: {e}")
+
+# ---------------------------------------------------------
+# 8. BUILD & ENCRYPT MASTER 'all.enc' (ALL CHANNELS UNIFIED)
+# ---------------------------------------------------------
+if all_master_channels:
+    master_m3u = OUTPUT_HEADER + "\n".join(all_master_channels) + "\n"
+    encrypted_master = encrypt_with_session_key(master_m3u)
+    with open(os.path.join(DIST_DIR, "all.enc"), "w", encoding="utf-8") as f:
+        f.write(encrypted_master)
+    print("  -> [Cloudflare Output] Saved unified master 'all.enc'")
+
+# ---------------------------------------------------------
+# 9. BUILD & ENCRYPT UNIFIED REMOTE CONFIG
 # ---------------------------------------------------------
 remote_config = {
     "playlists": config_playlists
@@ -221,13 +257,27 @@ if EPG_URL:
     remote_config["epgUrl"] = EPG_URL
     remote_config["epg_url"] = EPG_URL
 
-print("Encrypting unified config...")
-with open("cloudflare_dist/remote_config.enc", "w", encoding="utf-8") as f:
+print("Encrypting unified remote_config.enc...")
+with open(os.path.join(DIST_DIR, "remote_config.enc"), "w", encoding="utf-8") as f:
     f.write(encrypt_with_session_key(json.dumps(remote_config)))
 
-print("Encrypting and exporting Session Token...")
-with open("cloudflare_dist/session_token.enc", "w", encoding="utf-8") as f:
+print("Encrypting and exporting session_token.enc...")
+with open(os.path.join(DIST_DIR, "session_token.enc"), "w", encoding="utf-8") as f:
     f.write(encrypt_session_key())
 
-print("SUCCESS! All files generated in 'cloudflare_dist/'.")
-print(f"Total playlists processed: {len(config_playlists)}")
+# ---------------------------------------------------------
+# 10. COPY index.html & PURGE UNENCRYPTED .m3u FROM DIST
+# ---------------------------------------------------------
+if os.path.exists("index.html"):
+    shutil.copy("index.html", os.path.join(DIST_DIR, "index.html"))
+
+# STRICT SECURITY: Delete any raw .m3u files in dist so NO plaintext streams are exposed!
+for raw_m3u in glob.glob(os.path.join(DIST_DIR, "*.m3u")):
+    os.remove(raw_m3u)
+
+print("\n" + "="*60)
+print(f"SUCCESS! All files encrypted and placed in '{DIST_DIR}/'.")
+print("Files ready to deploy to Cloudflare Pages (https://omnitv-live.pages.dev/):")
+for f in sorted(os.listdir(DIST_DIR)):
+    print(f"  - {f}")
+print("="*60)
