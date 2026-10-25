@@ -1,4 +1,5 @@
-﻿import urllib.request
+# language: Python, file: omnitv_telugu_S4.py
+import urllib.request
 import urllib.error
 import re
 import ssl
@@ -13,20 +14,19 @@ from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.backends import default_backend
 
 # ─── CONFIG (READ FROM ENVIRONMENT - ZERO HARDCODED SECRETS) ──────────
-TV_URL = os.environ.get("JIO_TV_URL", "").strip()
-ZEE_URL       = os.environ.get("ZEE_URL", "").strip()
-TVTELUGU_URL  = os.environ.get("DIGITAL_URL", "").strip()
+PRIMARY_URL  = os.environ.get("JIO_TV_URL", "").strip()
+FALLBACK_URL = os.environ.get("DIGITAL_URL", "").strip()
 
-TEMP_ENC_FILE = "template.enc"
-TEMP_M3U_FILE = "template.m3u"
-LOCAL_FILE    = "Tel_Local.enc"
-OUTPUT_FILE   = "helloworld.m3u"
+TEMP_ENC_FILE  = "template.enc"
+TEMP_M3U_FILE  = "template.m3u"
+LOCAL_ENC_FILE = "Tel_Local.enc"
+LOCAL_M3U_FILE = "Tel_Local.m3u"
+OUTPUT_FILE    = "helloworld.m3u"
 
-RETRY_COUNT   = 5
-RETRY_DELAY   = 10
+RETRY_COUNT = 5
+RETRY_DELAY = 10
 
 OUTPUT_HEADER = os.environ.get("M3U_OUTPUT_HEADER", "#EXTM3U\n").strip() + "\n"
-ZEE_CHANNELS_TO_SKIP = {"zee telugu hd", "zee cinemalu hd", "zee telugu", "zee cinemalu"}
 
 def get_master_crypto():
     hex_key = os.environ.get("OMNI_MASTER_KEY", "").strip()
@@ -39,6 +39,7 @@ def get_master_crypto():
         return key, iv
     except Exception:
         return None, None
+
 def decrypt_payload(b64_str):
     key, iv = get_master_crypto()
     if not key:
@@ -70,10 +71,10 @@ def fetch_url(url, retries=RETRY_COUNT):
             with urllib.request.urlopen(req, context=ctx, timeout=30) as resp:
                 data = resp.read().decode("utf-8", errors="replace")
                 if data.strip():
-                    print(f"Fetched successfully on attempt {attempt}")
+                    print(f"Fetched successfully on attempt {attempt}: {url[:45]}...")
                     return data
         except Exception as e:
-            print(f"Attempt {attempt}/{retries} failed: {e}")
+            print(f"Attempt {attempt}/{retries} failed for {url[:45]}...: {e}")
             if attempt < retries:
                 time.sleep(RETRY_DELAY)
     return ""
@@ -178,33 +179,30 @@ def main():
     temp_order = parse_temp_order()
     print(f"Found {len(temp_order)} channels in template for ordering")
 
-    tv_content = fetch_url(TV_URL)
-    zee_content = fetch_url(ZEE_URL)
-    tvtelugu_content = fetch_url(TVTELUGU_URL)
+    print(f"Fetching Primary URL: {PRIMARY_URL[:50]}...")
+    primary_content = fetch_url(PRIMARY_URL)
 
-    tv_blocks = parse_source_into_blocks(tv_content) if tv_content else []
-    zee_blocks = parse_source_into_blocks(zee_content) if zee_content else []
-    tvtelugu_blocks = parse_source_into_blocks(tvtelugu_content) if tvtelugu_content else []
+    print(f"Fetching Fallback URL: {FALLBACK_URL[:50]}...")
+    fallback_content = fetch_url(FALLBACK_URL)
 
-    tv_dict = build_dict(tv_blocks)
-    zee_dict = build_dict(zee_blocks)
-    tt_dict = build_dict(tvtelugu_blocks)
+    primary_blocks = parse_source_into_blocks(primary_content) if primary_content else []
+    fallback_blocks = parse_source_into_blocks(fallback_content) if fallback_content else []
+
+    primary_dict = build_dict(primary_blocks)
+    fallback_dict = build_dict(fallback_blocks)
 
     extracted_channels = {}
-    found_count = 0
+    primary_found = 0
+    fallback_found = 0
 
     for name in temp_order:
         selected_block = None
-        if name in ZEE_CHANNELS_TO_SKIP:
-            if name in zee_dict:
-                selected_block = zee_dict[name]
-            elif name in tt_dict:
-                selected_block = tt_dict[name]
-        else:
-            if name in tv_dict:
-                selected_block = tv_dict[name]
-            elif name in tt_dict:
-                selected_block = tt_dict[name]
+        if name in primary_dict:
+            selected_block = primary_dict[name]
+            primary_found += 1
+        elif name in fallback_dict:
+            selected_block = fallback_dict[name]
+            fallback_found += 1
 
         if selected_block:
             new_block = []
@@ -214,28 +212,37 @@ def main():
                 else:
                     new_block.append(line)
             extracted_channels[name] = new_block
-            found_count += 1
 
-    print(f"Extracted {found_count} channels out of {len(temp_order)} from template.")
+    total_found = primary_found + fallback_found
+    print(f"Extracted {total_found} channels out of {len(temp_order)} from template.")
+    print(f"  - From Primary URL:  {primary_found}")
+    print(f"  - From Fallback URL: {fallback_found}")
 
-    gk_content = ""
+    local_content = ""
     try:
-        local_src = LOCAL_FILE if os.path.exists(LOCAL_FILE) else "Tel_Local.enc"
-        if os.path.exists(local_src):
-            with open(local_src, 'r', encoding='utf-8') as f:
-                raw_gk = f.read()
+        local_src = None
+        if os.path.exists(LOCAL_ENC_FILE):
+            local_src = LOCAL_ENC_FILE
+        elif os.path.exists(LOCAL_M3U_FILE):
+            local_src = LOCAL_M3U_FILE
+
+        if local_src:
+            with open(local_src, "r", encoding="utf-8") as f:
+                raw_local = f.read()
             if local_src.endswith(".enc"):
-                gk_content = decrypt_payload(raw_gk)
+                local_content = decrypt_payload(raw_local)
             else:
-                gk_content = raw_gk
-            print(f"Successfully read local GK source from {local_src}.")
+                local_content = raw_local
+            print(f"Successfully read local source from {local_src}.")
+        else:
+            print("No local file found (checked Tel_Local.enc and Tel_Local.m3u).")
     except Exception as e:
-        print(f"Could not read local GK source: {e}")
+        print(f"Could not read local source: {e}")
 
-    gk_blocks = parse_source_into_blocks(gk_content) if gk_content else []
-    print(f"Local source: {len(gk_blocks)} blocks found")
+    local_blocks = parse_source_into_blocks(local_content) if local_content else []
+    print(f"Local source: {len(local_blocks)} blocks found")
 
-    if not extracted_channels and not gk_blocks:
+    if not extracted_channels and not local_blocks:
         print("All sources failed! Writing keep-alive placeholder.")
         final_text = f"{OUTPUT_HEADER}\n# Last Attempted: {current_time}\n# ERROR: Sources unavailable. Will retry next run.\n"
     else:
@@ -244,7 +251,7 @@ def main():
             if name in extracted_channels:
                 for line in extracted_channels[name]:
                     final_text += line + "\n"
-        for block in gk_blocks:
+        for block in local_blocks:
             for line in block:
                 final_text += line + "\n"
 
@@ -257,4 +264,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
