@@ -2,7 +2,7 @@ name: Advanced OmniTV Deployer
 
 on:
   schedule:
-    - cron: '0 * * * *' # ప్రతి 60 నిమిషాలకు
+    - cron: '0 * * * *' # ప్రతి 60 నిమిషాలకు ఆటోమేటిక్ రన్
   workflow_dispatch:
   push:
     branches:
@@ -30,25 +30,27 @@ jobs:
           python -m pip install --upgrade pip
           pip install cryptography requests
 
-      - name: Run OmniTV Channel Syncers
+      - name: Run OmniTV Channel Syncers (S1 to S8 Order)
         env:
           M3U_OUTPUT_HEADER: ${{ secrets.M3U_OUTPUT_HEADER }}
           OMNI_MASTER_KEY: ${{ secrets.OMNI_MASTER_KEY }}
-          CLOUDPLAY_JIO_URL: ${{ secrets.CLOUDPLAY_JIO_URL }}
-          CLOUDPLAY_MBJTV_URL: ${{ secrets.CLOUDPLAY_MBJTV_URL }}
-          ZEE_URL: ${{ secrets.ZEE_URL }}
-          TVTELUGU_MADHU_URL: ${{ secrets.TVTELUGU_MADHU_URL }}
+          JIO_TV_URL: ${{ secrets.JIO_TV_URL }}
+          JIO_TV_PLUS_URL: ${{ secrets.JIO_TV_PLUS_URL }}
+          DIGITAL_URL: ${{ secrets.DIGITAL_URL }}
+          FANCODE_URL: ${{ secrets.FANCODE_URL }}
           JSTAR_URL: ${{ secrets.JSTAR_URL }}
           SONY_URL: ${{ secrets.SONY_URL }}
           NONY_URL: ${{ secrets.NONY_URL }}
           DIGITAL_TV_URL: ${{ secrets.DIGITAL_TV_URL }}
+          ZEE_URL: ${{ secrets.ZEE_URL }}
+          SUNNXT_URL: ${{ secrets.SUNNXT_URL }}
         run: |
-          python omnitv_telugu_S4.py || true
           python omnitv_jio_S1.py || true
           python omnitv_jioplus_S2.py || true
+          python omnitv_telugu_S4.py || true
+          python omnitv_sports_Liv_S6.py || true
           python omnitv_jio_star_All_S7.py || true
           python omnitv_Zee__SunNXT_S8.py || true
-          python omnitv_sports_Liv_S6.py || true
 
       - name: Run OmniTV Master Deployer (Encrypt & Package)
         env:
