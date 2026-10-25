@@ -1,0 +1,65 @@
+name: Advanced OmniTV Deployer
+
+on:
+  schedule:
+    - cron: '0 * * * *' # ప్రతి 60 నిమిషాలకు
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+  deployments: write
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install cryptography requests
+
+      - name: Run OmniTV Channel Syncers
+        env:
+          M3U_OUTPUT_HEADER: ${{ secrets.M3U_OUTPUT_HEADER }}
+          OMNI_MASTER_KEY: ${{ secrets.OMNI_MASTER_KEY }}
+          CLOUDPLAY_JIO_URL: ${{ secrets.CLOUDPLAY_JIO_URL }}
+          CLOUDPLAY_MBJTV_URL: ${{ secrets.CLOUDPLAY_MBJTV_URL }}
+          ZEE_URL: ${{ secrets.ZEE_URL }}
+          TVTELUGU_MADHU_URL: ${{ secrets.TVTELUGU_MADHU_URL }}
+          JSTAR_URL: ${{ secrets.JSTAR_URL }}
+          SONY_URL: ${{ secrets.SONY_URL }}
+          NONY_URL: ${{ secrets.NONY_URL }}
+          DIGITAL_TV_URL: ${{ secrets.DIGITAL_TV_URL }}
+        run: |
+          python omnitv_telugu_S4.py || true
+          python omnitv_jio_S1.py || true
+          python omnitv_jioplus_S2.py || true
+          python omnitv_jio_star_All_S7.py || true
+          python omnitv_Zee__SunNXT_S8.py || true
+          python omnitv_sports_Liv_S6.py || true
+
+      - name: Run OmniTV Master Deployer (Encrypt & Package)
+        env:
+          M3U_OUTPUT_HEADER: ${{ secrets.M3U_OUTPUT_HEADER }}
+          OMNI_MASTER_KEY: ${{ secrets.OMNI_MASTER_KEY }}
+        run: |
+          python omnitv_main.py
+
+      - name: Deploy to Cloudflare Pages
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy cloudflare_dist --project-name=omnitv-live
